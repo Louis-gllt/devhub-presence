@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const HEALTH_URL = process.env.DEVHUB_HEALTH_URL;
+const EVENTS_URL = process.env.DEVHUB_EVENTS_URL;
+const EVENTS_SECRET = process.env.CRON_SECRET;
 const PORT = Number(process.env.PORT || 10000);
 if (!TOKEN) {
   console.error('DISCORD_TOKEN manquant');
@@ -24,6 +26,26 @@ let health = { status: 'unknown', text: 'Démarrage…' };
 function presence() {
   const status = health.status === 'ok' ? 'online' : health.status === 'error' ? 'dnd' : 'idle';
   return { since: null, afk: false, status, activities: [{ type: 4, name: 'Custom Status', state: health.text }] };
+}
+
+let memberTimer;
+
+async function forwardMembers(attempt = 0) {
+  if (!EVENTS_URL || !EVENTS_SECRET) return;
+  try {
+    const res = await fetch(EVENTS_URL, { method: 'POST', headers: { authorization: `Bearer ${EVENTS_SECRET}` }, signal: AbortSignal.timeout(55_000) });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && !body.busy) return log(`Membres synchronisés : ${JSON.stringify(body)}`);
+    throw new Error(body.error ?? (body.busy ? 'occupé' : `HTTP ${res.status}`));
+  } catch (err) {
+    if (attempt < 4) setTimeout(() => forwardMembers(attempt + 1), 5_000 * 2 ** attempt);
+    else log(`Synchronisation des membres impossible : ${err.message}`);
+  }
+}
+
+function onMemberChange() {
+  clearTimeout(memberTimer);
+  memberTimer = setTimeout(forwardMembers, 3_000);
 }
 
 function send(op, d) {
@@ -62,7 +84,7 @@ async function connect() {
         send(1, seq);
       }, d.heartbeat_interval);
       if (sessionId) send(6, { token: TOKEN, session_id: sessionId, seq });
-      else send(2, { token: TOKEN, intents: 0, properties: { os: 'linux', browser: 'devhub', device: 'devhub' }, presence: presence() });
+      else send(2, { token: TOKEN, intents: 2, properties: { os: 'linux', browser: 'devhub', device: 'devhub' }, presence: presence() });
     } else if (op === 11) acked = true;
     else if (op === 1) send(1, seq);
     else if (op === 7) ws.close(4000);
@@ -73,6 +95,9 @@ async function connect() {
         seq = null;
       }
       setTimeout(() => ws.close(4000), 1000 + Math.random() * 4000);
+    } else if (op === 0 && (t === 'GUILD_MEMBER_ADD' || t === 'GUILD_MEMBER_REMOVE')) {
+      log(`${t === 'GUILD_MEMBER_ADD' ? 'Arrivée' : 'Départ'} d’un membre`);
+      onMemberChange();
     } else if (op === 0 && (t === 'READY' || t === 'RESUMED')) {
       if (t === 'READY') {
         sessionId = d.session_id;
