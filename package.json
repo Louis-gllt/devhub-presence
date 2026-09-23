@@ -1,0 +1,9 @@
+{
+  "name": "devhub-presence",
+  "version": "1.0.0",
+  "description": "Garde le bot Discord DevHub en ligne en permanence et affiche l'état de santé des projets dans son statut",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node index.mjs" }
+}
