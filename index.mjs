@@ -65,7 +65,7 @@ function onDispatch(t, d) {
   } else if (t === 'GUILD_AUDIT_LOG_ENTRY_CREATE') {
     debounced('audit');
   } else if (t === 'MESSAGE_CREATE' && d.guild_id && d.author && !d.author.bot && !d.webhook_id) {
-    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), content: d.content ?? '', attachments: (d.attachments ?? []).map((a) => ({ url: a.url, name: a.filename })), createdAt: Date.parse(d.timestamp) || Date.now() });
+    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), content: d.content ?? '', attachments: (d.attachments ?? []).map((a) => ({ url: a.url, name: a.filename })), createdAt: Date.parse(d.timestamp) || Date.now(), mentionsEveryone: !!d.mention_everyone, roleMentions: (d.mention_roles ?? []).length });
   } else if (t === 'MESSAGE_UPDATE' && d.guild_id && d.author && !d.author.bot && d.edited_timestamp) {
     forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), content: d.content ?? '', edited: true });
   } else if (t === 'MESSAGE_DELETE' && d.guild_id) {
