@@ -11,7 +11,9 @@ if (!TOKEN) {
 }
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
-const FATAL = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
+const FATAL = new Set([4004, 4010, 4011, 4012, 4013]);
+let messageContent = true;
+const intents = () => 2 | 4 | 512 | 1024 | (messageContent ? 32768 : 0);
 
 let ws;
 let seq = null;
@@ -63,9 +65,13 @@ function onDispatch(t, d) {
   } else if (t === 'GUILD_AUDIT_LOG_ENTRY_CREATE') {
     debounced('audit');
   } else if (t === 'MESSAGE_CREATE' && d.guild_id && d.author && !d.author.bot && !d.webhook_id) {
-    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), attachments: d.attachments?.length ?? 0 });
+    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), content: d.content ?? '', attachments: (d.attachments ?? []).map((a) => ({ url: a.url, name: a.filename })), createdAt: Date.parse(d.timestamp) || Date.now() });
   } else if (t === 'MESSAGE_UPDATE' && d.guild_id && d.author && !d.author.bot && d.edited_timestamp) {
-    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), edited: true });
+    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), content: d.content ?? '', edited: true });
+  } else if (t === 'MESSAGE_DELETE' && d.guild_id) {
+    forward({ kind: 'message_delete', channelId: d.channel_id, ids: [d.id] });
+  } else if (t === 'MESSAGE_DELETE_BULK' && d.guild_id) {
+    forward({ kind: 'message_delete', channelId: d.channel_id, ids: d.ids ?? [] });
   } else if (t === 'MESSAGE_REACTION_ADD' && d.guild_id && !d.member?.user?.bot) {
     forward({ kind: 'reaction', channelId: d.channel_id, messageId: d.message_id, userId: d.user_id, user: user(d.member?.user), emoji: emojiOf(d.emoji) });
   } else if (t === 'MESSAGE_REACTION_REMOVE' && d.guild_id) {
@@ -109,7 +115,7 @@ async function connect() {
         send(1, seq);
       }, d.heartbeat_interval);
       if (sessionId) send(6, { token: TOKEN, session_id: sessionId, seq });
-      else send(2, { token: TOKEN, intents: 2 | 4 | 512 | 1024, properties: { os: 'linux', browser: 'devhub', device: 'devhub' }, presence: presence() });
+      else send(2, { token: TOKEN, intents: intents(), properties: { os: 'linux', browser: 'devhub', device: 'devhub' }, presence: presence() });
     } else if (op === 11) acked = true;
     else if (op === 1) send(1, seq);
     else if (op === 7) ws.close(4000);
@@ -136,6 +142,15 @@ async function connect() {
   ws.addEventListener('close', (event) => {
     clearInterval(heartbeat);
     connectedSince = null;
+    if (event.code === 4014 && messageContent) {
+      messageContent = false;
+      sessionId = null;
+      resumeUrl = null;
+      seq = null;
+      log('Intent « Message Content » refusé par Discord : reconnexion sans le contenu des messages. Active-le dans le portail développeur pour archiver le texte.');
+      retry('intent message content indisponible');
+      return;
+    }
     if (FATAL.has(event.code)) {
       log(`Fermeture définitive (code ${event.code})`);
       process.exit(1);
