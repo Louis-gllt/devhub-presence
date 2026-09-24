@@ -28,24 +28,49 @@ function presence() {
   return { since: null, afk: false, status, activities: [{ type: 4, name: 'Custom Status', state: health.text }] };
 }
 
-let memberTimer;
+const timers = new Map();
 
-async function forwardMembers(attempt = 0) {
+async function forward(payload, attempt = 0) {
   if (!EVENTS_URL || !EVENTS_SECRET) return;
   try {
-    const res = await fetch(EVENTS_URL, { method: 'POST', headers: { authorization: `Bearer ${EVENTS_SECRET}` }, signal: AbortSignal.timeout(55_000) });
+    const res = await fetch(EVENTS_URL, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${EVENTS_SECRET}`, 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(55_000),
+    });
     const body = await res.json().catch(() => ({}));
-    if (res.ok && !body.busy) return log(`Membres synchronisés : ${JSON.stringify(body)}`);
-    throw new Error(body.error ?? (body.busy ? 'occupé' : `HTTP ${res.status}`));
+    if (res.ok && body?.busy !== true) return;
+    throw new Error(body?.error ?? (body?.busy ? 'occupé' : `HTTP ${res.status}`));
   } catch (err) {
-    if (attempt < 4) setTimeout(() => forwardMembers(attempt + 1), 5_000 * 2 ** attempt);
-    else log(`Synchronisation des membres impossible : ${err.message}`);
+    if (attempt < 4) setTimeout(() => forward(payload, attempt + 1), 5_000 * 2 ** attempt);
+    else log(`Relais « ${payload.kind} » impossible : ${err.message}`);
   }
 }
 
-function onMemberChange() {
-  clearTimeout(memberTimer);
-  memberTimer = setTimeout(forwardMembers, 3_000);
+function debounced(kind, delay = 3_000) {
+  clearTimeout(timers.get(kind));
+  timers.set(kind, setTimeout(() => forward({ kind }), delay));
+}
+
+const user = (u) => (u ? { id: u.id, username: u.username, global_name: u.global_name ?? null, avatar: u.avatar ?? null, bot: !!u.bot } : undefined);
+const emojiOf = (e) => (e?.id ? `<${e.animated ? 'a' : ''}:${e.name}:${e.id}>` : e?.name ?? '❔');
+
+function onDispatch(t, d) {
+  if (t === 'GUILD_MEMBER_ADD' || t === 'GUILD_MEMBER_REMOVE') {
+    log(`${t === 'GUILD_MEMBER_ADD' ? 'Arrivée' : 'Départ'} d’un membre`);
+    debounced('members');
+  } else if (t === 'GUILD_AUDIT_LOG_ENTRY_CREATE') {
+    debounced('audit');
+  } else if (t === 'MESSAGE_CREATE' && d.guild_id && d.author && !d.author.bot && !d.webhook_id) {
+    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), attachments: d.attachments?.length ?? 0 });
+  } else if (t === 'MESSAGE_UPDATE' && d.guild_id && d.author && !d.author.bot && d.edited_timestamp) {
+    forward({ kind: 'message', channelId: d.channel_id, messageId: d.id, author: user(d.author), edited: true });
+  } else if (t === 'MESSAGE_REACTION_ADD' && d.guild_id && !d.member?.user?.bot) {
+    forward({ kind: 'reaction', channelId: d.channel_id, messageId: d.message_id, userId: d.user_id, user: user(d.member?.user), emoji: emojiOf(d.emoji) });
+  } else if (t === 'MESSAGE_REACTION_REMOVE' && d.guild_id) {
+    forward({ kind: 'reaction', channelId: d.channel_id, messageId: d.message_id, userId: d.user_id, emoji: emojiOf(d.emoji), removed: true });
+  }
 }
 
 function send(op, d) {
@@ -84,7 +109,7 @@ async function connect() {
         send(1, seq);
       }, d.heartbeat_interval);
       if (sessionId) send(6, { token: TOKEN, session_id: sessionId, seq });
-      else send(2, { token: TOKEN, intents: 2, properties: { os: 'linux', browser: 'devhub', device: 'devhub' }, presence: presence() });
+      else send(2, { token: TOKEN, intents: 2 | 4 | 512 | 1024, properties: { os: 'linux', browser: 'devhub', device: 'devhub' }, presence: presence() });
     } else if (op === 11) acked = true;
     else if (op === 1) send(1, seq);
     else if (op === 7) ws.close(4000);
@@ -95,10 +120,9 @@ async function connect() {
         seq = null;
       }
       setTimeout(() => ws.close(4000), 1000 + Math.random() * 4000);
-    } else if (op === 0 && (t === 'GUILD_MEMBER_ADD' || t === 'GUILD_MEMBER_REMOVE')) {
-      log(`${t === 'GUILD_MEMBER_ADD' ? 'Arrivée' : 'Départ'} d’un membre`);
-      onMemberChange();
-    } else if (op === 0 && (t === 'READY' || t === 'RESUMED')) {
+    } else if (op === 0 && t !== 'READY' && t !== 'RESUMED') {
+      onDispatch(t, d);
+    } else if (op === 0) {
       if (t === 'READY') {
         sessionId = d.session_id;
         resumeUrl = d.resume_gateway_url;
